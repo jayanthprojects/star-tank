@@ -60,7 +60,12 @@ button:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
 <input id="nm" maxlength="10" placeholder="Pilot name" autocomplete="off" aria-label="Pilot name">
 <div id="grid"></div>
 <div class="row"><button id="off">Play offline</button></div>
-<div class="row"><button class="md" id="mi" aria-pressed="true">Individual</button><button class="md" id="mt" aria-pressed="false">Team 5v5</button></div><div class="row"><input id="rc" value="arena1" maxlength="16" size="9" aria-label="Room code"><button id="on">Play online</button></div>
+<div class="row"><button class="md" id="mi" aria-pressed="true">Individual</button><button class="md" id="mt" aria-pressed="false">Team 5v5</button></div>
+<div class="row">
+  <input id="rc" placeholder="Room code" maxlength="16" size="9" aria-label="Room code">
+  <button id="cp" aria-label="Copy room code">Copy</button>
+  <button id="on">Play online</button>
+</div>
 <p>Arrows or WASD to fly, Space to fire. Asteroids break in two hits, planets are solid. Every ship has 20 health, so 20 hits eliminates it. Up to 10 pilots share a room code: Individual is free-for-all, Team splits 5v5 with no friendly fire.</p>
 </div>
 <script>
@@ -199,7 +204,27 @@ name0='Pilot'+(rnd(10,99)|0);
 const pn=()=>{name=($('nm').value.trim()||name0).slice(0,10);return name};
 $('off').onclick=()=>{pn();begin('off')};const tg=v=>{tmode=v;$('mi').setAttribute('aria-pressed',!v);$('mt').setAttribute('aria-pressed',!!v)};$('mi').onclick=()=>tg(0);$('mt').onclick=()=>tg(1);
 
-// --- FIREBASE REALTIME DATABASE MULTIPLAYER INTEGRATION ---
+// --- COPY ROOM CODE BUTTON LOGIC ---
+$('cp').onclick = async () => {
+  let code = $('rc').value.trim().toUpperCase();
+  if (!code) {
+    code = Math.random().toString(36).slice(2, 6).toUpperCase();
+    $('rc').value = code;
+  }
+  try {
+    await navigator.clipboard.writeText(code);
+    const origText = $('cp').textContent;
+    $('cp').textContent = 'Copied!';
+    setTimeout(() => { $('cp').textContent = origText; }, 1500);
+  } catch (err) {
+    $('rc').select();
+    document.execCommand('copy');
+    $('cp').textContent = 'Copied!';
+    setTimeout(() => { $('cp').textContent = 'Copy'; }, 1500);
+  }
+};
+
+// --- FIREBASE REALTIME DATABASE MULTIPLAYER INTEGRATION WITH UNIQUE CODES ---
 let db = null;
 let roomCode = '';
 let myId = 'u_' + Math.random().toString(36).slice(2, 8);
@@ -229,8 +254,14 @@ $('on').onclick = async () => {
     return;
   }
 
-  roomCode = ('tank-' + (($('rc').value.toLowerCase().replace(/[^a-z0-9_.-]/g,'') || 'arena1') + (tmode ? '-t' : '-i'))).slice(0, 32);
-  m.textContent = 'Connecting to Firebase room...';
+  let rawCode = $('rc').value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+  if (!rawCode) {
+    rawCode = Math.random().toString(36).slice(2, 6);
+    $('rc').value = rawCode.toUpperCase();
+  }
+
+  roomCode = ('tank-' + rawCode + (tmode ? '-t' : '-i')).slice(0, 32);
+  m.textContent = 'Connecting to room ' + rawCode.toUpperCase() + '...';
 
   try {
     activeRoomRef = db.ref('star_tanks_rooms/' + roomCode);
@@ -307,7 +338,7 @@ $('on').onclick = async () => {
     const t = tmode ? 0 : -1;
     await new Promise(r => setTimeout(r, 600));
     begin('on', t);
-    m.textContent = 'Connected successfully!';
+    m.textContent = 'Connected to room ' + rawCode.toUpperCase() + '!';
 
   } catch (e) {
     net = null;
