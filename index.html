@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Star Tanks</title>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<!-- Added PeerJS library to enable online P2P multiplayer locally -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
 :root{color-scheme:dark;--bg:#07102a;--ink:#e8f4ff;--dim:#8fa6d9;--led:#bfe8ff;--hot:#ff5a4a;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
@@ -193,17 +195,105 @@ SHIPS.forEach((s,i)=>{const b=document.createElement('button'),bar=(l,v)=>`<u>${
 name0='Pilot'+(rnd(10,99)|0);
 const pn=()=>{name=($('nm').value.trim()||name0).slice(0,10);return name};
 $('off').onclick=()=>{pn();begin('off')};const tg=v=>{tmode=v;$('mi').setAttribute('aria-pressed',!v);$('mt').setAttribute('aria-pressed',!!v)};$('mi').onclick=()=>tg(0);$('mt').onclick=()=>tg(1);
-$('on').onclick=async()=>{pn();const m=$('msg');m.textContent='Connecting...';
-  try{const R=window.claude&&await claude.use('room');if(!R)throw 0;
-    net=await R.join('g'+($('rc').value.toLowerCase().replace(/[^a-z0-9_.-]/g,'')||'arena1').slice(0,16)+(tmode?'-t':'-i'))}catch(e){net=null;m.textContent='Online needs a signed-in claude.ai viewer. Offline mode works anywhere.';return}
-  net.on('chat',m=>{const d=m.data||{};say(String(d.n||'Pilot').slice(0,12),d.t,/^#[0-9a-f]{6}$/i.test(d.c)?d.c:null)});
-  net.on('shot',m=>{const d=m.data;if(m.sameTab||st!=='play'||!d||!Number.isFinite(d.x)||!Number.isFinite(d.y))return;const p=net.peers().find(q=>q.peer===m.peer);
-    const i=Math.min(9,Math.max(0,d.s|0));bl.push({x:d.x,y:d.y,d:(d.d|0)&3,o:m.peer,t:p?p.presence.t:-1,v:330+SHIPS[i][6]*50,c:vc(SHIPS[i][2])});sfx('eshot')});
-  net.on('kill',m=>{const s=net.peers().find(q=>q.sameTab);if(m.data&&s&&m.data.to===s.peer&&st==='play'){me.sc+=100;sfx('kill');say('','You scored a kill! +100')}});
-  net.presence({n:name,t:-1}).catch(()=>{});m.textContent='Joining room...';await new Promise(r=>setTimeout(r,1300));
-  const o=net.peers().filter(p=>!p.sameTab&&p.presence.n),a=o.filter(p=>p.presence.t===0).length,b=o.filter(p=>p.presence.t===1).length;
-  if(o.length>=10||(tmode&&a>4&&b>4)){over('Room full: 10 pilots max. Try another room code.');return}
-  const t=tmode?(a<=b?0:1):-1;net.presence({t}).catch(()=>{});begin('on',t)};
+
+// --- REPLACED CLAUDE ROOM CODE WITH PEERJS LOCAL NETWORKING ---
+let peer = null, connections = {};
+let peerStates = {};
+
+function setupConnection(conn) {
+  connections[conn.peer] = conn;
+  conn.on('data', (packet) => {
+    if (packet.type === 'presence') {
+      peerStates[conn.peer] = packet.data;
+    } else if (packet.type === 'chat') {
+      say(packet.data.n, packet.data.t, packet.data.c);
+    } else if (packet.type === 'shot') {
+      const d = packet.data;
+      const i = Math.min(9, Math.max(0, d.s | 0));
+      bl.push({ x: d.x, y: d.y, d: (d.d | 0) & 3, o: packet.peer, t: peerStates[packet.peer] ? peerStates[packet.peer].t : -1, v: 330 + SHIPS[i][6] * 50, c: vc(SHIPS[i][2]) });
+      sfx('eshot');
+    } else if (packet.type === 'kill') {
+      if (packet.data && packet.data.to === peer.id) {
+        me.sc += 100;
+        sfx('kill');
+        say('', 'You scored a kill! +100');
+      }
+    }
+  });
+  conn.on('close', () => { delete connections[conn.peer]; delete peerStates[conn.peer]; });
+}
+
+async function checkRoomExists(roomCode) {
+  return new Promise((resolve) => {
+    const testPeer = new Peer();
+    testPeer.on('open', () => {
+      const c = testPeer.connect(roomCode);
+      c.on('open', () => { testPeer.destroy(); resolve(false); });
+      setTimeout(() => { testPeer.destroy(); resolve(true); }, 1000);
+    });
+    testPeer.on('error', () => { resolve(true); });
+  });
+}
+
+$('on').onclick = async () => {
+  pn();
+  const m = $('msg');
+  m.textContent = 'Connecting to P2P network...';
+  
+  const roomCode = ('star-tanks-' + (($('rc').value.toLowerCase().replace(/[^a-z0-9_.-]/g,'') || 'arena1') + (tmode ? '-t' : '-i'))).slice(0, 32);
+  
+  try {
+    if (peer) { peer.destroy(); }
+    const isHost = await checkRoomExists(roomCode);
+    peer = new Peer(isHost ? roomCode : undefined);
+    
+    peer.on('open', (id) => {
+      if (!isHost) {
+        const conn = peer.connect(roomCode);
+        setupConnection(conn);
+      }
+      m.textContent = 'Connected! Waiting for pilots...';
+    });
+
+    peer.on('connection', (conn) => {
+      setupConnection(conn);
+    });
+
+    net = {
+      emit: async (event, data) => {
+        for (let id in connections) {
+          if (connections[id].open) {
+            connections[id].send({ type: event, data, peer: peer.id });
+          }
+        }
+      },
+      presence: async (data) => {
+        for (let id in connections) {
+          if (connections[id].open) {
+            connections[id].send({ type: 'presence', data, peer: peer.id });
+          }
+        }
+      },
+      peers: () => {
+        const list = [{ peer: peer.id, presence: { n: name, x: me.x, y: me.y, d: me.d, s: sel, h: me.h, hm: HP, t: me.t, sc: me.sc, m: me.mv ? 1 : 0, i: me.inv > 0 ? 1 : 0 }, isMe: true, sameTab: true }];
+        for (let id in peerStates) {
+          list.push({ peer: id, presence: peerStates[id], isMe: false, sameTab: false });
+        }
+        return list;
+      },
+      leave: async () => { if (peer) peer.destroy(); }
+    };
+
+    const t = tmode ? 0 : -1;
+    await new Promise(r => setTimeout(r, 600));
+    begin('on', t);
+
+  } catch (e) {
+    net = null;
+    m.textContent = 'Connection failed. Check your internet connection.';
+  }
+};
+
 bake();
 (function loop(tm){const dt=Math.min((tm-last)/1000||0,.05);last=tm;update(dt);if(st!=='menu')draw(tm);requestAnimationFrame(loop)})(0);
 </script>
